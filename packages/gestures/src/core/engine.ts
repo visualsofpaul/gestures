@@ -12,7 +12,40 @@ import { calculateFingerDirection } from "@/core/utils";
 
 const FINGER_MCP_INDEX = { Thumb: 2, Index: 5, Middle: 9, Ring: 13, Pinky: 17 };
 
-export class GestureEngine<RegisteredGestures extends string = never> {
+interface FrameMatch {
+  hand: "Left" | "Right";
+  direction: Direction;
+  confidence: number;
+}
+
+interface TwoHandListener {
+  nameA: string;
+  nameB: string;
+  callback: (eventA: GestureEvent, eventB: GestureEvent) => void;
+}
+
+// A way to conditionally type the onGestures method based on whether two-hand gestures are enabled or not. If two-hand gestures are enabled, the method will be available; otherwise, it will be undefined.
+export interface GestureEngineOptions<
+  TwoHandGesturesEnabled extends boolean = false,
+> {
+  enableTwoHandGestures?: TwoHandGesturesEnabled;
+}
+
+type OnGesturesMethod<
+  RegisteredGestures extends string,
+  TwoHandGesturesEnabled extends boolean,
+> = TwoHandGesturesEnabled extends true
+  ? (
+      nameA: RegisteredGestures,
+      nameB: RegisteredGestures,
+      callback: (eventA: GestureEvent, eventB: GestureEvent) => void,
+    ) => void
+  : undefined;
+
+export class GestureEngine<
+  RegisteredGestures extends string = never,
+  TwoHandGesturesEnabled extends boolean = false,
+> {
   private _isActive: boolean = false;
   private gestures = new Map<string, GestureBuilder<string>>();
   private gestureListeners = new Map<
@@ -26,10 +59,39 @@ export class GestureEngine<RegisteredGestures extends string = never> {
   private firstDetectedTimestamps = new Map<string, number>();
   private lastIdleTimestamps = new Map<string, number>();
 
+  private readonly twoHandGesturesEnabled: boolean;
+  private twoHandListeners: TwoHandListener[] = [];
+  private comboStates = new Map<string, "waiting" | "active">();
+  private twoHandFirstDetectedTimestamps = new Map<string, number>();
+
+  public readonly onGestures: OnGesturesMethod<
+    RegisteredGestures,
+    TwoHandGesturesEnabled
+  >;
+
   private videoElement: HTMLVideoElement | null = null;
   private handsDetector:
     | import("@mediapipe/tasks-vision").HandLandmarker
     | null = null;
+
+  /**
+   * @param options An object containing configuration options for the GestureEngine. The enableTwoHandGestures property allows you to enable or disable two-hand gesture detection. If enabled, the onGestures method will be available for registering two-hand gesture callbacks.
+   */
+  constructor(options: GestureEngineOptions<TwoHandGesturesEnabled> = {}) {
+    this.twoHandGesturesEnabled = options.enableTwoHandGestures ?? false;
+
+    this.onGestures = (
+      this.twoHandGesturesEnabled
+        ? (
+            nameA: string,
+            nameB: string,
+            callback: (eventA: GestureEvent, eventB: GestureEvent) => void,
+          ) => {
+            this.twoHandListeners.push({ nameA, nameB, callback });
+          }
+        : undefined
+    ) as OnGesturesMethod<RegisteredGestures, TwoHandGesturesEnabled>;
+  }
 
   /**
    * Returns whether the gesture engine is currently active. When active, it will process webcam frames and detect gestures. When inactive, it will skip gesture detection to save resources.
@@ -46,9 +108,12 @@ export class GestureEngine<RegisteredGestures extends string = never> {
    */
   public register<NewName extends string>(
     gesture: GestureBuilder<NewName>,
-  ): GestureEngine<RegisteredGestures | NewName> {
+  ): GestureEngine<RegisteredGestures | NewName, TwoHandGesturesEnabled> {
     this.gestures.set(gesture.name, gesture);
-    return this as unknown as GestureEngine<RegisteredGestures | NewName>;
+    return this as unknown as GestureEngine<
+      RegisteredGestures | NewName,
+      TwoHandGesturesEnabled
+    >;
   }
 
   /**
@@ -139,7 +204,7 @@ export class GestureEngine<RegisteredGestures extends string = never> {
         delegate: "GPU", // Use GPU for better performance, if available
       },
       runningMode: "VIDEO",
-      numHands: 2, // Important to allow multi-hand gestures
+      numHands: this.twoHandGesturesEnabled ? 2 : 1, // Important to allow multi-hand gestures
     });
 
     // Step 2: Activate the webcam and start processing frames
@@ -157,6 +222,23 @@ export class GestureEngine<RegisteredGestures extends string = never> {
   }
 
   /**
+   * Filters the detected hands to find all hands that match the base pose rules defined in the provided GestureBuilder.
+   * @param hands An array of HandLandmarks representing the detected hands in the current frame.
+   * @param gestureBuilder The GestureBuilder instance defining the gesture to match against the detected hands.
+   * @returns An array of HandLandmarks objects that match the base pose rules, or an empty array if no matching hands are found.
+   */
+  private findAllMatchingHands(
+    hands: HandLandmarks[],
+    gestureBuilder: GestureBuilder<string>,
+  ): HandLandmarks[] {
+    return hands.filter((hand) =>
+      gestureBuilder.basePoseRules.every(
+        (rule) => rule.evaluate([hand]).matches,
+      ),
+    );
+  }
+
+  /**
    * Finds a hand from the detected hands that matches the base pose rules defined in the provided GestureBuilder.
    * @param hands An array of HandLandmarks representing the detected hands in the current frame.
    * @param gestureBuilder The GestureBuilder instance defining the gesture to match against the detected hands.
@@ -166,16 +248,258 @@ export class GestureEngine<RegisteredGestures extends string = never> {
     hands: HandLandmarks[],
     gestureBuilder: GestureBuilder<string>,
   ): HandLandmarks | null {
-    for (const hand of hands) {
-      const singleHandArray = [hand];
-      const allRulesMatch = gestureBuilder.basePoseRules.every(
-        (rule) => rule.evaluate(singleHandArray).matches,
-      );
+    return this.findAllMatchingHands(hands, gestureBuilder)[0] ?? null;
+  }
 
-      if (allRulesMatch) return hand;
+  /**
+   * Finds all hands from the detected hands that match both the base pose rules and the expected direction defined in the provided GestureBuilder. This method first filters the hands based on the base pose rules, then calculates the direction of the dominant finger for each matching hand, and finally filters out any hands that do not match the expected direction.
+   * @param hands An array of HandLandmarks representing the detected hands in the current frame.
+   * @param gestureBuilder The GestureBuilder instance defining the gesture to match against the detected hands, including the expected direction.
+   * @returns An array of FrameMatch objects representing the hands that match both the base pose rules and the expected direction, or an empty array if no matching hands are found.
+   */
+  private findAllMatchingHandsWithDirection(
+    hands: HandLandmarks[],
+    gestureBuilder: GestureBuilder<string>,
+  ): FrameMatch[] {
+    const mcpIndex =
+      FINGER_MCP_INDEX[
+        gestureBuilder.dominantFinger as keyof typeof FINGER_MCP_INDEX
+      ] || 5;
+
+    return this.findAllMatchingHands(hands, gestureBuilder)
+      .map((hand) => ({
+        hand: hand.handedness,
+        direction: calculateFingerDirection(hand, mcpIndex),
+        confidence: 1.0,
+      }))
+      .filter(
+        (match) =>
+          gestureBuilder.expectedDirection === Direction.Any ||
+          match.direction === gestureBuilder.expectedDirection,
+      );
+  }
+
+  /**
+   * Filters the detected hands to find those that have been held in the matching pose for at least the specified hold duration. This method maintains a timestamp for each hand and gesture combination, allowing it to determine how long each hand has been in the matching pose. Hands that have not been held long enough are filtered out.
+   * @param matches An array of FrameMatch objects representing the hands that match the base pose rules and expected direction.
+   * @param gestureName The name of the gesture being evaluated, used to track timestamps for each hand and gesture combination.
+   * @param holdDurationMs The minimum duration (in milliseconds) that a hand must be held in the matching pose to be considered a valid match.
+   * @returns An array of FrameMatch objects representing the hands that have been held in the matching pose for at least the specified hold duration, or an empty array if no hands meet the criteria.
+   */
+  private filterByHoldDuration(
+    matches: FrameMatch[],
+    gestureName: string,
+    holdDurationMs: number,
+  ): FrameMatch[] {
+    const now = Date.now();
+    const matchedKeys = new Set(
+      matches.map((match) => `${gestureName}:${match.hand}`),
+    );
+
+    // Clean up old timestamps for hands that are no longer matching the gesture
+    for (const key of this.twoHandFirstDetectedTimestamps.keys()) {
+      if (key.startsWith(`${gestureName}:`) && !matchedKeys.has(key)) {
+        this.twoHandFirstDetectedTimestamps.delete(key);
+      }
     }
 
+    return matches.filter((match) => {
+      const key = `${gestureName}:${match.hand}`;
+      if (!this.twoHandFirstDetectedTimestamps.has(key)) {
+        this.twoHandFirstDetectedTimestamps.set(key, now);
+      }
+      const startedAt = this.twoHandFirstDetectedTimestamps.get(key) as number;
+      return now - startedAt >= holdDurationMs;
+    });
+  }
+
+  /**
+   * Finds a pair of hands from two sets of matching hands that are disjoint, meaning they belong to different hands (one left and one right). This method is used to evaluate two-hand gestures, ensuring that the detected hands for each gesture do not overlap. If a valid pair is found, it returns an object containing the two FrameMatch objects; otherwise, it returns null.
+   * @param matchesA An array of FrameMatch objects representing the hands that match the first gesture in a two-hand gesture combination.
+   * @param matchesB An array of FrameMatch objects representing the hands that match the second gesture in a two-hand gesture combination.
+   * @returns An object containing the two FrameMatch objects if a disjoint pair is found, or null if no valid pair exists.
+   */
+  private findDisjointHandPair(
+    matchesA: FrameMatch[],
+    matchesB: FrameMatch[],
+  ): { a: FrameMatch; b: FrameMatch } | null {
+    for (const a of matchesA) {
+      for (const b of matchesB) {
+        if (a.hand !== b.hand) return { a, b };
+      }
+    }
     return null;
+  }
+
+  /**
+   * Checks whether all trigger fingers defined in the GestureBuilder are curled for a given hand. This method evaluates each trigger finger using the FingerStateRule and calculates the average confidence of the curled state. If any trigger finger is not curled, it returns false along with a confidence of 0. If all trigger fingers are curled, it returns true along with the average confidence.
+   * @param hand The hand landmarks to evaluate.
+   * @param gestureBuilder The gesture builder containing the trigger finger information.
+   * @returns An object indicating whether all trigger fingers are curled and the average confidence.
+   */
+  private checkTriggerFingersCurled(
+    hand: HandLandmarks,
+    gestureBuilder: GestureBuilder<string>,
+  ): { areCurled: boolean; avgConfidence: number } {
+    if (gestureBuilder.triggerFingers.length === 0) {
+      return { areCurled: true, avgConfidence: 1.0 };
+    }
+
+    let sumConfidence = 0;
+    for (const finger of gestureBuilder.triggerFingers) {
+      const check = new FingerStateRule(
+        gestureBuilder.targetHandMode,
+        finger,
+        State.Curled,
+      ).evaluate([hand]);
+
+      if (!check.matches) {
+        return { areCurled: false, avgConfidence: 0 };
+      }
+      sumConfidence += check.confidence;
+    }
+
+    return {
+      areCurled: true,
+      avgConfidence: sumConfidence / gestureBuilder.triggerFingers.length,
+    };
+  }
+
+  /**
+   * Processes all registered two-hand gesture listeners by evaluating the detected hands against the defined gestures. This method checks for matching hands for each gesture, applies hold duration filtering, and determines if a valid pair of hands exists for the two-hand gesture. If a valid pair is found and meets the cooldown requirements, the registered callback is invoked with the corresponding GestureEvent objects for each hand. The method returns a set of hand sides that have been consumed by two-hand gestures to prevent overlapping detections.
+   * @param hands An array of HandLandmarks representing the detected hands in the current frame.
+   * @returns A set of hand sides ("Left" or "Right") that have been consumed by two-hand gestures, preventing them from being used in single-hand gesture detections.
+   */
+  private processTwoHandListeners(
+    hands: HandLandmarks[],
+  ): Set<"Left" | "Right"> {
+    const consumedHandSides = new Set<"Left" | "Right">();
+
+    for (const { nameA, nameB, callback } of this.twoHandListeners) {
+      const comboKey = `${nameA}+${nameB}`;
+      const builderA = this.gestures.get(nameA);
+      const builderB = this.gestures.get(nameB);
+
+      if (!builderA || !builderB) continue;
+
+      const rawMatchesA = this.findAllMatchingHandsWithDirection(
+        hands,
+        builderA,
+      );
+      const rawMatchesB = this.findAllMatchingHandsWithDirection(
+        hands,
+        builderB,
+      );
+
+      const matchesA = this.filterByHoldDuration(
+        rawMatchesA,
+        nameA,
+        builderA.holdDurationMs ?? 0,
+      );
+      const matchesB = this.filterByHoldDuration(
+        rawMatchesB,
+        nameB,
+        builderB.holdDurationMs ?? 0,
+      );
+
+      const pair =
+        matchesA.length > 0 && matchesB.length > 0
+          ? this.findDisjointHandPair(matchesA, matchesB)
+          : null;
+
+      if (!pair) {
+        this.comboStates.set(comboKey, "waiting");
+        continue;
+      }
+
+      // Check if either gesture has trigger fingers defined, indicating a dynamic combo
+      const hasTriggerA = builderA.triggerFingers.length > 0;
+      const hasTriggerB = builderB.triggerFingers.length > 0;
+      const isDynamicCombo = hasTriggerA || hasTriggerB;
+
+      // If it's a dynamic combo, we need to check the trigger finger states for both hands
+      const handObjA = hands.find((h) => h.handedness === pair.a.hand);
+      const handObjB = hands.find((h) => h.handedness === pair.b.hand);
+
+      if (!handObjA || !handObjB) {
+        this.comboStates.set(comboKey, "waiting");
+        continue;
+      }
+
+      const triggerStatusA = this.checkTriggerFingersCurled(handObjA, builderA);
+      const triggerStatusB = this.checkTriggerFingersCurled(handObjB, builderB);
+
+      const currentState = this.comboStates.get(comboKey) ?? "waiting";
+
+      // Special case: If it's a dynamic combo, we need to handle the trigger finger states and cooldowns
+      if (isDynamicCombo) {
+        // State 1: Trigger-Finger is NOT curled (ready to fire)
+        const triggerReadyA = !hasTriggerA || !triggerStatusA.areCurled;
+        const triggerReadyB = !hasTriggerB || !triggerStatusB.areCurled;
+
+        if (triggerReadyA && triggerReadyB) {
+          this.comboStates.set(comboKey, "waiting");
+          // Mark the hands as consumed to prevent them from being used in other gestures
+          consumedHandSides.add(pair.a.hand);
+          consumedHandSides.add(pair.b.hand);
+          continue;
+        }
+
+        // State 2: Trigger-Finger is curled (ready to fire)
+        if (currentState !== "waiting") {
+          // If the combo is already in "active" state, we don't want to fire again until the trigger fingers are released and curled again. So we skip this frame.
+          consumedHandSides.add(pair.a.hand);
+          consumedHandSides.add(pair.b.hand);
+          continue;
+        }
+
+        // Check if the average confidence of the trigger fingers meets the required threshold for both hands. If not, we skip this frame.
+        if (
+          (hasTriggerA &&
+            triggerStatusA.avgConfidence < builderA.targetConfidence) ||
+          (hasTriggerB &&
+            triggerStatusB.avgConfidence < builderB.targetConfidence)
+        ) {
+          continue;
+        }
+      }
+
+      consumedHandSides.add(pair.a.hand);
+      consumedHandSides.add(pair.b.hand);
+
+      const now = Date.now();
+      const lastTriggered = this.lastTriggeredTimestamps.get(comboKey) || 0;
+      const cooldown = Math.max(
+        builderA.cooldownMs ?? 0,
+        builderB.cooldownMs ?? 0,
+      );
+
+      if (now - lastTriggered >= cooldown) {
+        const eventA: GestureEvent = {
+          name: nameA,
+          confidence: pair.a.confidence,
+          hand: pair.a.hand.toLowerCase() as "left" | "right",
+          direction: pair.a.direction,
+          timestamp: now,
+        };
+        const eventB: GestureEvent = {
+          name: nameB,
+          confidence: pair.b.confidence,
+          hand: pair.b.hand.toLowerCase() as "left" | "right",
+          direction: pair.b.direction,
+          timestamp: now,
+        };
+
+        callback(eventA, eventB);
+
+        this.lastTriggeredTimestamps.set(comboKey, now);
+        this.twoHandFirstDetectedTimestamps.set(`${nameA}:${pair.a.hand}`, now);
+        this.twoHandFirstDetectedTimestamps.set(`${nameB}:${pair.b.hand}`, now);
+        this.comboStates.set(comboKey, isDynamicCombo ? "waiting" : "active");
+      }
+    }
+
+    return consumedHandSides;
   }
 
   /**
@@ -227,12 +551,15 @@ export class GestureEngine<RegisteredGestures extends string = never> {
   }
 
   /**
-   * Processes a single frame of hand landmarks to evaluate registered gestures. This method checks each registered gesture against the current hand landmarks, determining if the gesture's base pose and trigger conditions are met. It manages the state of each gesture (waiting or ready) and emits gesture events when a gesture is successfully detected, taking into account cooldown periods and confidence thresholds.
-   * @param hands An array of HandLandmarks representing the detected hands in the current frame. Each HandLandmarks object contains the handedness and 3D points of the hand.
+   * Processes a single frame of hand landmarks to evaluate registered gestures.
+   * @param hands An array of HandLandmarks representing the detected hands in the current frame.
    */
   private processFrame(hands: HandLandmarks[]): void {
+    const consumedHandSides = this.twoHandGesturesEnabled
+      ? this.processTwoHandListeners(hands)
+      : new Set<"Left" | "Right">();
+
     for (const [name, gestureBuilder] of this.gestures.entries()) {
-      // If the engine is inactive and the gesture is not a system trigger, skip processing this gesture
       if (!this._isActive && !gestureBuilder.isSystemTrigger) {
         this.gestureStates.set(name, "waiting");
         continue;
@@ -240,72 +567,56 @@ export class GestureEngine<RegisteredGestures extends string = never> {
 
       const matchingHands = hands.filter(
         (hand) =>
-          gestureBuilder.targetHandMode === "any" ||
-          hand.handedness.toLowerCase() === gestureBuilder.targetHandMode,
+          (gestureBuilder.targetHandMode === "any" ||
+            hand.handedness.toLowerCase() === gestureBuilder.targetHandMode) &&
+          !consumedHandSides.has(hand.handedness),
       );
 
-      if (matchingHands.length === 0) {
-        this.gestureStates.set(name, "waiting");
-        continue;
-      }
-
       const activeHand = this.findMatchingHand(matchingHands, gestureBuilder);
-      if (!activeHand) {
-        this.gestureStates.set(name, "waiting");
-        continue;
-      }
 
       const mcpIndex =
         FINGER_MCP_INDEX[
           gestureBuilder.dominantFinger as keyof typeof FINGER_MCP_INDEX
         ] || 5;
-      const currentHandDirection = calculateFingerDirection(
-        activeHand,
-        mcpIndex,
-      );
 
-      let directionMatches = true;
-      if (gestureBuilder.expectedDirection !== Direction.Any) {
+      let currentHandDirection: Direction = Direction.Any;
+      let directionMatches = false;
+
+      if (activeHand) {
+        currentHandDirection = calculateFingerDirection(activeHand, mcpIndex);
         directionMatches =
+          gestureBuilder.expectedDirection === Direction.Any ||
           currentHandDirection === gestureBuilder.expectedDirection;
       }
 
-      // Step 1: Check if the base pose rules are satisfied
-      let basePoseMatches = true;
-      for (const rule of gestureBuilder.basePoseRules) {
-        if (!rule.evaluate(hands).matches) {
-          basePoseMatches = false;
-          break;
-        }
-      }
+      const poseOk = activeHand !== null && directionMatches;
 
-      // Step 2: Check if the trigger fingers are in the expected state (curled)
       let triggerFingersAreCurled = true;
       let triggerConfidenceSum = 0;
-      for (const finger of gestureBuilder.triggerFingers) {
-        const checkCurled = new FingerStateRule(
-          gestureBuilder.targetHandMode,
-          finger,
-          State.Curled,
-        ).evaluate([activeHand]);
-        if (!checkCurled.matches) {
-          triggerFingersAreCurled = false;
-          break;
+      if (activeHand && gestureBuilder.triggerFingers.length > 0) {
+        for (const finger of gestureBuilder.triggerFingers) {
+          const checkCurled = new FingerStateRule(
+            gestureBuilder.targetHandMode,
+            finger,
+            State.Curled,
+          ).evaluate([activeHand]);
+          if (!checkCurled.matches) {
+            triggerFingersAreCurled = false;
+            break;
+          }
+          triggerConfidenceSum += checkCurled.confidence;
         }
-        triggerConfidenceSum += checkCurled.confidence;
       }
 
       const currentState = this.gestureStates.get(name) || "waiting";
       const now = Date.now();
       const lastTriggered = this.lastTriggeredTimestamps.get(name) || 0;
 
-      // Step 3: Determine if the gesture should be emitted based on the current state, base pose match, trigger finger state, and timing settings
       const holdFor = gestureBuilder.holdDurationMs ?? 0;
       const idleFor = gestureBuilder.cooldownMs ?? 0;
 
-      // Manage timestamps for when the base pose was first seen or last lost
       let basePoseHeldLongEnough = false;
-      if (basePoseMatches && directionMatches) {
+      if (poseOk) {
         if (!this.firstDetectedTimestamps.has(name)) {
           this.firstDetectedTimestamps.set(name, now);
         }
@@ -313,7 +624,6 @@ export class GestureEngine<RegisteredGestures extends string = never> {
         const startedAt = this.firstDetectedTimestamps.get(name) || now;
         basePoseHeldLongEnough = now - startedAt >= holdFor;
       } else {
-        // Base pose not matching: mark idle start if not already set
         if (this.firstDetectedTimestamps.has(name)) {
           this.firstDetectedTimestamps.delete(name);
         }
@@ -322,50 +632,47 @@ export class GestureEngine<RegisteredGestures extends string = never> {
         }
         const idleStartedAt = this.lastIdleTimestamps.get(name) || now;
         const idleElapsed = now - idleStartedAt;
-        // If idle period is shorter than configured, keep previous state (debounce)
         if (idleFor > 0 && idleElapsed < idleFor) {
-          // Do not forcefully set to waiting yet; skip to next gesture
           continue;
         }
-        // If idleFor satisfied (or zero), clear idle timestamp so next detection restarts timing
         this.lastIdleTimestamps.delete(name);
       }
 
-      // Option 1: Static pose without trigger fingers
+      // Option 1: Static gesture without trigger fingers
       if (gestureBuilder.triggerFingers.length === 0) {
-        if (basePoseMatches && directionMatches && basePoseHeldLongEnough) {
+        if (poseOk && basePoseHeldLongEnough) {
           if (now - lastTriggered >= gestureBuilder.cooldownMs) {
             this.emitGesture(
               name,
               1.0,
-              gestureBuilder.targetHandMode,
+              activeHand
+                ? (activeHand.handedness.toLowerCase() as "left" | "right")
+                : gestureBuilder.targetHandMode,
               currentHandDirection,
             );
             this.lastTriggeredTimestamps.set(name, now);
-            // Require a fresh hold interval before the next static trigger
             this.firstDetectedTimestamps.set(name, now);
           }
         }
-        if (!basePoseMatches || !directionMatches) {
+        if (!poseOk) {
           this.gestureStates.set(name, "waiting");
         }
       }
 
       // Option 2: Dynamic gesture with trigger fingers
       else {
-        // Dynamic gesture flow (requires trigger fingers)
-        if (
-          basePoseMatches &&
-          !triggerFingersAreCurled &&
-          directionMatches &&
-          basePoseHeldLongEnough
-        ) {
+        if (!poseOk) {
+          // Hand is not in the base pose or direction does not match
+          this.gestureStates.set(name, "waiting");
+        } else if (!triggerFingersAreCurled && basePoseHeldLongEnough) {
+          // Hand is in the base pose and direction matches, but trigger fingers are not curled
           this.gestureStates.set(name, "ready");
         } else if (
           currentState === "ready" &&
-          basePoseMatches &&
-          triggerFingersAreCurled
+          triggerFingersAreCurled &&
+          basePoseHeldLongEnough
         ) {
+          // Hand is in the base pose and direction matches, trigger fingers are curled, and the gesture is ready to fire
           if (now - lastTriggered >= gestureBuilder.cooldownMs) {
             const avgTriggerConfidence =
               triggerConfidenceSum / gestureBuilder.triggerFingers.length;
@@ -374,16 +681,17 @@ export class GestureEngine<RegisteredGestures extends string = never> {
               this.emitGesture(
                 name,
                 avgTriggerConfidence,
-                gestureBuilder.targetHandMode,
+                activeHand
+                  ? (activeHand.handedness.toLowerCase() as "left" | "right")
+                  : gestureBuilder.targetHandMode,
                 currentHandDirection,
               );
               this.lastTriggeredTimestamps.set(name, now);
-              // Require a fresh hold interval before the next dynamic trigger cycle
               this.firstDetectedTimestamps.set(name, now);
             }
           }
-          this.gestureStates.set(name, "waiting");
-        } else if (!basePoseMatches || !directionMatches) {
+
+          // After firing the gesture, reset the state to "waiting" to ensure that the gesture can be detected again after the cooldown period.
           this.gestureStates.set(name, "waiting");
         }
       }
@@ -391,11 +699,11 @@ export class GestureEngine<RegisteredGestures extends string = never> {
   }
 
   /**
-   * Emits a GestureEvent to all registered listeners for a specific gesture. This method is called internally when a gesture is successfully detected, and it constructs the GestureEvent object with the provided parameters, including the gesture name, confidence level, hand mode, direction, and timestamp. It then invokes all callback functions that have been registered for this gesture.
-   * @param name The name of the detected gesture, which should match the name defined in the GestureBuilder when the gesture was registered.
-   * @param confidence The confidence level of the detected gesture, typically a value between 0 and 1, indicating how certain the engine is that the gesture was performed correctly.
-   * @param handMode The hand mode associated with the detected gesture, indicating whether the gesture was performed with the left hand, right hand, both hands, or any hand.
-   * @param direction The direction of the detected gesture, which can be one of the values defined in the Direction enum (Up, Down, Left, Right, Any).
+   * Emits a GestureEvent to all registered listeners for a specific gesture.
+   * @param name The name of the detected gesture.
+   * @param confidence The confidence level of the detected gesture.
+   * @param handMode The hand mode associated with the detected gesture.
+   * @param direction The direction of the detected gesture.
    */
   private emitGesture(
     name: string,
