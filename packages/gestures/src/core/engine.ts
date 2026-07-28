@@ -29,6 +29,7 @@ export interface GestureEngineOptions<
   TwoHandGesturesEnabled extends boolean = false,
 > {
   enableTwoHandGestures?: TwoHandGesturesEnabled;
+  startActive?: boolean;
 }
 
 type OnGesturesMethod<
@@ -75,10 +76,11 @@ export class GestureEngine<
     | null = null;
 
   /**
-   * @param options An object containing configuration options for the GestureEngine. The enableTwoHandGestures property allows you to enable or disable two-hand gesture detection. If enabled, the onGestures method will be available for registering two-hand gesture callbacks.
+   * @param options Configuration options for the GestureEngine. `twoHandGesturesEnabled` determines whether two-hand gestures are enabled, and `startActive` sets the initial active state of the engine.
    */
   constructor(options: GestureEngineOptions<TwoHandGesturesEnabled> = {}) {
     this.twoHandGesturesEnabled = options.enableTwoHandGestures ?? false;
+    this._isActive = options.startActive ?? false;
 
     this.onGestures = (
       this.twoHandGesturesEnabled
@@ -403,6 +405,14 @@ export class GestureEngine<
       const builderB = this.gestures.get(nameB);
 
       if (!builderA || !builderB) continue;
+
+      if (
+        !this._isActive &&
+        !(builderA.isSystemTrigger && builderB.isSystemTrigger)
+      ) {
+        this.comboStates.set(comboKey, "waiting");
+        continue;
+      }
 
       const rawMatchesA = this.findAllMatchingHandsWithDirection(
         hands,
