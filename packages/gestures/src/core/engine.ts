@@ -252,7 +252,7 @@ export class GestureEngine<
   }
 
   /**
-   * Finds all hands from the detected hands that match both the base pose rules and the expected direction defined in the provided GestureBuilder. This method first filters the hands based on the base pose rules, then calculates the direction of the dominant finger for each matching hand, and finally filters out any hands that do not match the expected direction.
+   * Finds all hands from the detected hands that match both the base pose rules and the expected direction defined in the provided GestureBuilder.
    * @param hands An array of HandLandmarks representing the detected hands in the current frame.
    * @param gestureBuilder The GestureBuilder instance defining the gesture to match against the detected hands, including the expected direction.
    * @returns An array of FrameMatch objects representing the hands that match both the base pose rules and the expected direction, or an empty array if no matching hands are found.
@@ -280,7 +280,29 @@ export class GestureEngine<
   }
 
   /**
-   * Filters the detected hands to find those that have been held in the matching pose for at least the specified hold duration. This method maintains a timestamp for each hand and gesture combination, allowing it to determine how long each hand has been in the matching pose. Hands that have not been held long enough are filtered out.
+   * Computes the measurements for a given hand based on the measurement rules defined in the provided GestureBuilder. This method evaluates each measurement rule against the hand and collects the resulting values into a record.
+   * @param hand The HandLandmarks object representing the detected hand for which measurements are to be computed.
+   * @param gestureBuilder The GestureBuilder instance containing the measurement rules to be evaluated against the hand.
+   * @returns A record containing the computed measurement values, or undefined if no measurement rules are defined in the GestureBuilder.
+   */
+  private computeMeasurements(
+    hand: HandLandmarks,
+    gestureBuilder: GestureBuilder<string>,
+  ): Record<string, number> | undefined {
+    if (gestureBuilder.measurementRules.length === 0) return undefined;
+
+    const measurements: Record<string, number> = {};
+    for (const { key, rule } of gestureBuilder.measurementRules) {
+      const result = rule.evaluate([hand]);
+      if (result.value !== undefined) {
+        measurements[key] = result.value;
+      }
+    }
+    return measurements;
+  }
+
+  /**
+   * Filters the detected hands to find those that have been held in the matching pose for at least the specified hold duration.
    * @param matches An array of FrameMatch objects representing the hands that match the base pose rules and expected direction.
    * @param gestureName The name of the gesture being evaluated, used to track timestamps for each hand and gesture combination.
    * @param holdDurationMs The minimum duration (in milliseconds) that a hand must be held in the matching pose to be considered a valid match.
@@ -314,7 +336,7 @@ export class GestureEngine<
   }
 
   /**
-   * Finds a pair of hands from two sets of matching hands that are disjoint, meaning they belong to different hands (one left and one right). This method is used to evaluate two-hand gestures, ensuring that the detected hands for each gesture do not overlap. If a valid pair is found, it returns an object containing the two FrameMatch objects; otherwise, it returns null.
+   * Finds a pair of hands from two sets of matching hands that are disjoint, meaning they belong to different hands (one left and one right).
    * @param matchesA An array of FrameMatch objects representing the hands that match the first gesture in a two-hand gesture combination.
    * @param matchesB An array of FrameMatch objects representing the hands that match the second gesture in a two-hand gesture combination.
    * @returns An object containing the two FrameMatch objects if a disjoint pair is found, or null if no valid pair exists.
@@ -332,7 +354,7 @@ export class GestureEngine<
   }
 
   /**
-   * Checks whether all trigger fingers defined in the GestureBuilder are curled for a given hand. This method evaluates each trigger finger using the FingerStateRule and calculates the average confidence of the curled state. If any trigger finger is not curled, it returns false along with a confidence of 0. If all trigger fingers are curled, it returns true along with the average confidence.
+   * Checks whether all trigger fingers defined in the GestureBuilder are curled for a given hand.
    * @param hand The hand landmarks to evaluate.
    * @param gestureBuilder The gesture builder containing the trigger finger information.
    * @returns An object indicating whether all trigger fingers are curled and the average confidence.
@@ -366,7 +388,7 @@ export class GestureEngine<
   }
 
   /**
-   * Processes all registered two-hand gesture listeners by evaluating the detected hands against the defined gestures. This method checks for matching hands for each gesture, applies hold duration filtering, and determines if a valid pair of hands exists for the two-hand gesture. If a valid pair is found and meets the cooldown requirements, the registered callback is invoked with the corresponding GestureEvent objects for each hand. The method returns a set of hand sides that have been consumed by two-hand gestures to prevent overlapping detections.
+   * Processes all registered two-hand gesture listeners by evaluating the detected hands against the defined gestures.
    * @param hands An array of HandLandmarks representing the detected hands in the current frame.
    * @returns A set of hand sides ("Left" or "Right") that have been consumed by two-hand gestures, preventing them from being used in single-hand gesture detections.
    */
@@ -475,12 +497,17 @@ export class GestureEngine<
       );
 
       if (now - lastTriggered >= cooldown) {
+        // Compute measurements for both hands based on their respective gesture builders
+        const measurementsA = this.computeMeasurements(handObjA, builderA);
+        const measurementsB = this.computeMeasurements(handObjB, builderB);
+
         const eventA: GestureEvent = {
           name: nameA,
           confidence: pair.a.confidence,
           hand: pair.a.hand.toLowerCase() as "left" | "right",
           direction: pair.a.direction,
           timestamp: now,
+          measurements: measurementsA,
         };
         const eventB: GestureEvent = {
           name: nameB,
@@ -488,6 +515,7 @@ export class GestureEngine<
           hand: pair.b.hand.toLowerCase() as "left" | "right",
           direction: pair.b.direction,
           timestamp: now,
+          measurements: measurementsB,
         };
 
         callback(eventA, eventB);
@@ -503,7 +531,7 @@ export class GestureEngine<
   }
 
   /**
-   * Starts the detection loop that continuously processes video frames from the webcam and detects gestures. This method uses requestAnimationFrame to ensure smooth and efficient frame processing. It transforms the raw hand landmarks and handedness data into a more usable format and calls the processFrame method to evaluate registered gestures.
+   * Starts the detection loop that continuously processes video frames from the webcam and detects gestures.
    * @param onFrameProcessed An optional callback function that is called after each frame is processed, receiving the transformed hand landmarks as an argument.
    */
   private startDetectionLoop(
@@ -642,6 +670,11 @@ export class GestureEngine<
       if (gestureBuilder.triggerFingers.length === 0) {
         if (poseOk && basePoseHeldLongEnough) {
           if (now - lastTriggered >= gestureBuilder.cooldownMs) {
+            // Measurements for the active hand are computed and included in the emitted gesture event
+            const measurements = activeHand
+              ? this.computeMeasurements(activeHand, gestureBuilder)
+              : undefined;
+
             this.emitGesture(
               name,
               1.0,
@@ -649,6 +682,7 @@ export class GestureEngine<
                 ? (activeHand.handedness.toLowerCase() as "left" | "right")
                 : gestureBuilder.targetHandMode,
               currentHandDirection,
+              measurements,
             );
             this.lastTriggeredTimestamps.set(name, now);
             this.firstDetectedTimestamps.set(name, now);
@@ -678,6 +712,11 @@ export class GestureEngine<
               triggerConfidenceSum / gestureBuilder.triggerFingers.length;
 
             if (avgTriggerConfidence >= gestureBuilder.targetConfidence) {
+              // Measurements for the active hand are computed and included in the emitted gesture event
+              const measurements = activeHand
+                ? this.computeMeasurements(activeHand, gestureBuilder)
+                : undefined;
+
               this.emitGesture(
                 name,
                 avgTriggerConfidence,
@@ -685,6 +724,7 @@ export class GestureEngine<
                   ? (activeHand.handedness.toLowerCase() as "left" | "right")
                   : gestureBuilder.targetHandMode,
                 currentHandDirection,
+                measurements,
               );
               this.lastTriggeredTimestamps.set(name, now);
               this.firstDetectedTimestamps.set(name, now);
@@ -704,12 +744,14 @@ export class GestureEngine<
    * @param confidence The confidence level of the detected gesture.
    * @param handMode The hand mode associated with the detected gesture.
    * @param direction The direction of the detected gesture.
+   * @param measurements Optional measurements associated with the detected gesture.
    */
   private emitGesture(
     name: string,
     confidence: number,
     handMode: "left" | "right" | "both" | "any",
     direction: Direction,
+    measurements?: Record<string, number>,
   ): void {
     const listeners = this.gestureListeners.get(name);
     if (!listeners) return;
@@ -721,6 +763,7 @@ export class GestureEngine<
         hand: handMode,
         direction,
         timestamp: Date.now(),
+        measurements,
       });
     });
   }

@@ -15,8 +15,9 @@ const engine = new GestureEngine({
   )
   .register(Presets.Pointer("Pointer").holdFor(2000))
   .register(Presets.Gun("Gun"))
-  .register(Presets.PinkyPinch("PinkyPinch").idleFor(2000))
+  .register(Presets.PinkyPinch("PinkyPinch"))
   .register(Presets.Fist("Fist").holdFor(2000))
+  .register(Presets.Peace("Peace").idleFor(2000))
   .register(
     Gesture.create("MiddleFinger")
       .where.anyHand()
@@ -32,6 +33,15 @@ const engine = new GestureEngine({
       .inState(State.Curled)
       .where.determineDirectionFrom(Finger.Middle)
       .idleFor(2000),
+  )
+  .register(
+    Gesture.create("PinchZoom")
+      .where.anyHand()
+      .has(Finger.Thumb)
+      .inState(State.Extended)
+      .has(Finger.Index)
+      .inState(State.Extended)
+      .tracks(Finger.Thumb, Finger.Index, "zoomDistance"),
   );
 
 engine.bindWebcam({
@@ -58,6 +68,10 @@ engine.onGesture("Fist", (event: GestureEvent) => {
   console.log("✊", event);
 });
 
+engine.onGesture("Peace", (event: GestureEvent) => {
+  console.log("✌️", event);
+});
+
 engine.onGesture("MiddleFinger", (event: GestureEvent) => {
   console.log("🖕", event);
 });
@@ -78,6 +92,14 @@ engine.onGestures(
     console.log("✊✊", eventA, eventB);
   },
 );
+
+engine.onGestures("PinkyPinch", "PinchZoom", (_, eventB: GestureEvent) => {
+  const distance = eventB.measurements?.zoomDistance;
+  const box = document.getElementById("zoom-box");
+  if (box && distance !== undefined) {
+    box.style.transform = `scale(${distance})`;
+  }
+});
 
 engine.onActiveState((event) => {
   console.log("Gesture detection active state changed:", event.activeState);
