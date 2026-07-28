@@ -1,35 +1,117 @@
 <!doctype html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Presentation Demo</title>
-</head>
 <html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gesture Presentation Demo</title>
+    <style>
+      #webcam-container {
+        position: fixed;
+        top: 32px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        transition:
+          opacity 0.3s ease,
+          transform 0.3s ease;
+      }
+
+      #webcam-container.hidden {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(-50%) translateY(-16px);
+      }
+
+      #webcam {
+        width: 35vw;
+        max-width: 480px;
+        min-width: 280px;
+        aspect-ratio: 4 / 3;
+        object-fit: cover;
+        border-radius: 16px;
+        transform: scaleX(-1);
+        background: #000;
+      }
+
+      .zoom-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 320px;
+        overflow: hidden;
+      }
+
+      .zoom-target {
+        display: inline-block;
+        padding: 32px;
+        background: #000;
+        border-radius: 16px;
+        border: 2px dashed #fff;
+        transform: scale(0.3);
+        will-change: transform;
+      }
+
+      .confirm-box {
+        padding: 16px 32px;
+        background: #000;
+        border-radius: 16px;
+        font-size: 1rem;
+        display: inline-block;
+        transition: background 0.3s ease;
+      }
+    </style>
+  </head>
   <body style="margin: 0">
-    <!-- Script that initializes the presentation -->
     <script type="module" src="./src/main.ts"></script>
 
-    <!-- biome-ignore lint/a11y/useMediaCaption: this is used only for the gesture detection -->
-    <video id="webcam" autoplay playsinline style="display: none;"></video>
+    <div id="webcam-container">
+      <!-- biome-ignore lint/a11y/useMediaCaption: gesture detection webcam -->
+      <video id="webcam" autoplay playsinline></video>
+    </div>
 
     <div class="reveal">
       <div class="slides">
         <section>
-          <h1>Slide 1</h1>
+          <h1>Gesture Demo</h1>
+          <p>
+            Mache die ThumbsUp-Geste mit beiden Händen für 1s, um die Engine zu
+            aktivieren.
+          </p>
         </section>
+
         <section>
-          <h1>Slide 2</h1>
+          <h1>Directional Navigation</h1>
+          <p>Nutze die Gun-Geste in eine Richtung, um zu navigieren.</p>
         </section>
+
         <section>
           <section>
-            <h1>Slide 3.1</h1>
+            <h1>Zooming</h1>
+            <p>
+              Nutze die PinkyPinch-Geste in Kombination mit Daumen und
+              Zeigefinger der anderen Hand, um zu zoomen.
+            </p>
+            <div class="zoom-container">
+              <div class="zoom-target" id="zoom-target">
+                <h2 style="margin: 0">Zoom mich!</h2>
+              </div>
+            </div>
           </section>
           <section>
-            <h1>Slide 3.2</h1>
+            <h1>Sub-Slide 3.2</h1>
+            <p>Weiter-Navigieren klappt wie gewohnt per Gun-Geste.</p>
           </section>
         </section>
+
         <section>
-          <h1>Slide 4</h1>
+          <h1>Hold Duration</h1>
+          <p>Halte die Peace-Geste für 1.5s fest.</p>
+          <br />
+          <div class="confirm-box">Warte auf Geste...</div>
         </section>
       </div>
     </div>
