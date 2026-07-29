@@ -104,3 +104,11 @@ The following items were deliberately left out of scope, with reasoning document
 - Two-hand gesture consumption is scoped to a whole hand side, not to the specific gesture pair involved.
 - Two-hand combination cooldowns are derived from both halves' individual settings rather than being independently configurable.
 - Continuous finger-distance tracking (`.tracks(...)`) only updates when its host gesture fires, not on every frame independent of any gesture state.
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for details.
+
+## Contributing
+
+This repository is not yet publicly maintained beyond the scope of this course submission; a `CONTRIBUTING.md` will be added upon public release.
