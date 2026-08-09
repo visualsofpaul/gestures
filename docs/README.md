@@ -13,3 +13,7 @@ This directory contains Architectural Decision Records (ADRs) for the project. A
 - [ADR 0007: Hybrid State Machine for Harmonized Static and Dynamic Gestures](./adr-0007-hybrid-state-machine-for-harmonized-static-and-dynamic-gestures.md)
 - [ADR 0008: Transition from waitFor to Explicit holdFor and idleFor Semantics](./adr-0008-transition-from-waitfor-to-explicit-holdfor-and-idlefor-semantics.md)
 - [ADR 0009: Unifying the Fluent Builder Return Type to Eliminate State Traps](./adr-0009-unifiying-the-fluent-builder-return-type-to-eliminate-state-traps.md)
+- [ADR 0010: Choosing the Deepening over a new Vision Application](./adr-0010-choosing-deepening-over-vision-application.md)
+- [ADR 0011: Two-Hand Gesture Coordination via an Engine-Level Combinator](./adr-0011-two-hand-gesture-coordination.md)
+- [ADR 0012: Generalizing Finger-Distance Rules into Spreads and Continuous Measurements](./adr-0012-generalized-finger-distance-and-measurements.md)
+- [ADR 0013: Deliberately Deferred Scope for This Deepening](./adr-0013-deliberately-deferred-scope.md)

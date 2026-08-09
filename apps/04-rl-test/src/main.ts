@@ -4,83 +4,154 @@ import "reveal.js/reveal.css";
 // @ts-expect-error
 import "reveal.js/theme/black.css";
 
-import { GestureEngine, type GestureEvent } from "gestures";
+import {
+  Finger,
+  Gesture,
+  GestureEngine,
+  type GestureEvent,
+  State,
+} from "gestures";
 import { Presets } from "gestures/presets";
 
-const engine = new GestureEngine()
-	.register(Presets.Gun("Navigate").idleFor(1000))
-	.register(
-		Presets.PinkyPinch("Toggle").holdFor(1000).idleFor(2000).asSystemGesture(),
-	);
+const isCameraManuallyHidden = false;
 
-engine.bindWebcam({
-	videoElement: document.getElementById("webcam") as HTMLVideoElement,
+// Step 1: Initialize Gesture Engine
+const engine = new GestureEngine<never, true>({
+  enableTwoHandGestures: true,
+  startActive: false, // Make sure to start in an inactive state, so the user can activate it with a gesture
+})
+  .register(
+    Presets.ThumbsUp("ThumbsUp").holdFor(1000).idleFor(2000).asSystemGesture(),
+  )
+  .register(Presets.Gun("Navigate").idleFor(1000))
+  .register(Presets.Peace("PeaceConfirm").holdFor(1500).idleFor(2000))
+  .register(Presets.PinkyPinch("PinkyPinch"))
+  .register(
+    Gesture.create("PinchZoom")
+      .where.anyHand()
+      .has(Finger.Thumb)
+      .inState(State.Extended)
+      .has(Finger.Index)
+      .inState(State.Extended)
+      .tracks(Finger.Thumb, Finger.Index, "zoomDistance"),
+  )
+  .register(Presets.Fist("Fist").idleFor(2000));
+
+// DOM Elements
+const webcamContainer = document.getElementById(
+  "webcam-container",
+) as HTMLDivElement;
+const webcamVideo = document.getElementById("webcam") as HTMLVideoElement;
+
+engine.bindWebcam({ videoElement: webcamVideo });
+Reveal.initialize({ hash: true, controls: true, progress: true });
+
+// Step 2: Gesture to Toggle Engine Active State
+engine.onGestures("ThumbsUp", "ThumbsUp", () => {
+  engine.toggleActiveState();
 });
 
-Reveal.initialize();
-
-engine.onGesture("Toggle", () => {
-	engine.toggleActiveState();
-});
-
+// Step 3: Directional Navigation
 engine.onGesture("Navigate", (event: GestureEvent) => {
-	const { direction } = event;
+  if (!Reveal.isReady()) return;
 
-	if (Reveal.isReady()) {
-		if (direction === "Left") {
-			Reveal.left();
-		} else if (direction === "Right") {
-			Reveal.right();
-		} else if (direction === "Up") {
-			Reveal.up();
-		} else if (direction === "Down") {
-			Reveal.down();
-		}
-	}
+  switch (event.direction) {
+    case "Left":
+      Reveal.left();
+      break;
+    case "Right":
+      Reveal.right();
+      break;
+    case "Up":
+      Reveal.up();
+      break;
+    case "Down":
+      Reveal.down();
+      break;
+  }
 });
+
+// Step 4: Pinch Zoom
+engine.onGestures("PinkyPinch", "PinchZoom", (_, eventB: GestureEvent) => {
+  const currentSlide = Reveal.getCurrentSlide();
+  const zoomTarget = currentSlide?.querySelector<HTMLElement>("#zoom-target");
+
+  if (zoomTarget && eventB.measurements?.zoomDistance !== undefined) {
+    const rawDistance = eventB.measurements.zoomDistance;
+    const scale = Math.max(0.3, Math.min(0.3 + rawDistance * 3.5, 2.5));
+    zoomTarget.style.transform = `scale(${scale})`;
+  }
+});
+
+// Step 5: Reset Zoom on Double Fist Gesture
+engine.onGestures("Fist", "Fist", () => {
+  const currentSlide = Reveal.getCurrentSlide();
+  const zoomTarget = currentSlide?.querySelector<HTMLElement>("#zoom-target");
+
+  if (zoomTarget) {
+    zoomTarget.style.transform = `scale(0.3)`;
+  }
+});
+
+// Step 6: Peace Gesture Confirmation
+engine.onGesture("PeaceConfirm", () => {
+  const currentSlide = Reveal.getCurrentSlide();
+  const confirmBox = currentSlide?.querySelector<HTMLElement>(".confirm-box");
+  if (confirmBox) {
+    confirmBox.style.backgroundColor = "#2e7d32";
+    confirmBox.textContent = "Geste 1.5s gehalten!";
+  }
+});
+
+// Step 7: Webcam Visibility Toggle
+function updateWebcamVisibility(engineIsActive: boolean) {
+  if (isCameraManuallyHidden || engineIsActive) {
+    webcamContainer.classList.add("hidden");
+  } else {
+    webcamContainer.classList.remove("hidden");
+  }
+}
 
 engine.onActiveState((event) => {
-	// Show a little alert with the current state (animates smoothly in and out)
-	const alert = document.createElement("div");
-	alert.textContent = event.activeState
-		? "Engine is active"
-		: "Engine is inactive";
+  updateWebcamVisibility(event.activeState);
 
-	// Base styles
-	alert.style.position = "fixed";
-	alert.style.top = "10px";
-	alert.style.left = "50%";
-	alert.style.padding = "10px 20px";
-	alert.style.backgroundColor = event.activeState ? "green" : "red";
-	alert.style.color = "white";
-	alert.style.fontFamily = "Arial, sans-serif";
-	alert.style.fontSize = "16px";
-	alert.style.borderRadius = "100px";
-	alert.style.zIndex = "1000";
-
-	// Initial state for animation
-	alert.style.opacity = "0";
-	alert.style.transform = "translateX(-50%) translateY(-20px)";
-	alert.style.transition = "opacity 0.3s ease, transform 0.3s ease";
-
-	document.body.appendChild(alert);
-
-	// Animate in after a short delay to ensure the element is rendered
-	setTimeout(() => {
-		alert.style.opacity = "1";
-		alert.style.transform = "translateX(-50%) translateY(0)";
-	}, 10);
-
-	// Let the alert stay for 2 seconds, then animate out and remove it from the DOM
-	setTimeout(() => {
-		alert.style.opacity = "0";
-		alert.style.transform = "translateX(-50%) translateY(-20px)";
-
-		// Remove the alert from the DOM after the transition ends
-		setTimeout(() => {
-			if (alert.parentNode) {
-				document.body.removeChild(alert);
-			}
-		}, 300);
-	}, 2000);
+  showToast(event.activeState ? "🟢 Engine Active" : "🔴 Engine Paused");
 });
+
+// Helper: Toast UI
+function showToast(message: string) {
+  let alert = document.getElementById("active-toast");
+  if (!alert) {
+    alert = document.createElement("div");
+    alert.id = "active-toast";
+    Object.assign(alert.style, {
+      position: "fixed",
+      bottom: "32px",
+      left: "50%",
+      transform: "translateX(-50%) translateY(16px)",
+      padding: "16px 32px",
+      backgroundColor: "rgba(0, 0, 0, 0.5)",
+      backdropFilter: "blur(16px)",
+      color: "#fff",
+      fontFamily: "system-ui, sans-serif",
+      fontSize: "16px",
+      borderRadius: "9999px",
+      zIndex: "10000",
+      opacity: "0",
+      transition: "opacity 0.3s ease, transform 0.3s ease",
+      pointerEvents: "none",
+    });
+    document.body.appendChild(alert);
+  }
+
+  alert.textContent = message;
+  requestAnimationFrame(() => {
+    alert.style.opacity = "1";
+    alert.style.transform = "translateX(-50%) translateY(0)";
+  });
+
+  setTimeout(() => {
+    alert.style.opacity = "0";
+    alert.style.transform = "translateX(-50%) translateY(20px)";
+  }, 2200);
+}
